@@ -2,11 +2,43 @@
 
 My personal configuration files for Omarchy (Arch Linux + Hyprland).
 
+## Folder Structure (Stow-Compatible)
+
+```
+dotfiles/
+├── home/                    ← Everything here mirrors ~/ on your machine
+│   ├── .config/
+│   │   ├── git/config
+│   │   ├── ghostty/config
+│   │   ├── lazygit/config.yml
+│   │   ├── tmux/tmux.conf
+│   │   └── starship.toml
+│   └── .gitconfig
+├── install.sh               ← Manual symlink script
+└── README.md
+```
+
+### Why `home/`?
+
+This structure follows the **GNU Stow convention**.
+
+**Stow** is a symlink manager. If you ran:
+```bash
+cd ~/dotfiles && stow home
+```
+
+It would automatically create symlinks from `~/` to every file inside `home/`, preserving the directory structure. We do the same thing manually with `install.sh` for full control.
+
+Think of it as:
+- `home/` = a template of your home directory
+- `install.sh` = copies that template into place using symlinks
+
 ## What's Managed
 
 | Config | Location | Description |
 |--------|----------|-------------|
-| `git` | `~/.config/git/config` | Git aliases, user info, diff settings |
+| `git` | `~/.config/git/config` | Git aliases, user info, delta pager |
+| `.gitconfig` | `~/.gitconfig` | Git delta diff settings |
 | `starship` | `~/.config/starship.toml` | Terminal prompt theme |
 | `ghostty` | `~/.config/ghostty/config` | Terminal emulator settings |
 | `tmux` | `~/.config/tmux/tmux.conf` | Terminal multiplexer |
@@ -19,21 +51,21 @@ My personal configuration files for Omarchy (Arch Linux + Hyprland).
 git clone git@github.com:prachi-keshavani/dotfiles.git ~/dotfiles
 cd ~/dotfiles
 
-# 2. Run the install script
+# 2. Run the install script (creates symlinks)
 bash install.sh
 ```
 
 ## How Symlinks Work
 
-These config files live in `~/dotfiles/` and are **symlinked** to their actual locations.
+These config files live in `~/dotfiles/home/` and are **symlinked** to their actual locations in `~/`.
 
 ```
-~/dotfiles/.config/starship.toml  ←──  real file
+~/dotfiles/home/.config/starship.toml  ←── real file
         │
         └── symlink ──→  ~/.config/starship.toml
 ```
 
-When you edit `~/.config/starship.toml`, you're actually editing the file in `~/dotfiles/`. This means:
+When you edit `~/.config/starship.toml`, you're actually editing the file in `~/dotfiles/home/`. This means:
 - All changes are tracked by git
 - Easy to backup and restore
 - One place to manage everything
@@ -41,14 +73,15 @@ When you edit `~/.config/starship.toml`, you're actually editing the file in `~/
 ## Adding a New Config
 
 ```bash
-# 1. Move the config into dotfiles
-mv ~/.config/some-app/config ~/dotfiles/.config/some-app/config
+# 1. Move the config into dotfiles/home/
+mv ~/.config/some-app/config ~/dotfiles/home/.config/some-app/config
 
 # 2. Create a symlink
-ln -s ~/dotfiles/.config/some-app/config ~/.config/some-app/config
+ln -s ~/dotfiles/home/.config/some-app/config ~/.config/some-app/config
 
 # 3. Commit
-git add .config/some-app/
+cd ~/dotfiles
+git add home/.config/some-app/
 git commit -m "Add some-app config"
 ```
 

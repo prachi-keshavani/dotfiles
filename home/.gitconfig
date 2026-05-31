@@ -1,0 +1,43 @@
+[delta]
+    syntax-theme = TwoDark
+    dark = true
+    tabs = 2
+    file-style = omit
+    file-decoration-style = none
+    line-numbers = true
+    line-numbers-left-format = "{nm:>4} "
+    line-numbers-right-format = "| {np:4} "
+    wrap-left-symbol = " "
+    wrap-right-symbol = " "
+    wrap-right-prefix-symbol = " "
+    
+    # Lumen-style soft colors
+    plus-style = syntax "#233228"
+    plus-emph-style = syntax "#2a4032"
+    minus-style = syntax "#322323"
+    minus-emph-style = syntax "#3d2b2b"
+    
+    hunk-header-style = "#565f89"
+    hunk-header-decoration-style = "#414868"
+
+[core]
+    pager = delta
+
+[pager]
+    diff = delta
+    log = delta
+    show = delta
+
+[delta "side-by-side"]
+    side-by-side = true
+
+# Use delta as git difftool
+[diff]
+    tool = delta
+
+[difftool "delta"]
+    cmd = delta
+
+# Use delta as merge tool
+[merge]
+    tool = delta

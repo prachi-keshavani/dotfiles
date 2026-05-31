@@ -48,6 +48,7 @@ Think of it as:
 | `tmux` | `~/.config/tmux/tmux.conf` | Terminal multiplexer |
 | `lazygit` | `~/.config/lazygit/config.yml` | Git TUI (terminal UI) |
 | `agents/skills` | `~/.agents/skills` | AI coding agent skills |
+| `python-beginner` | `~/.agents/skills/python-beginner` | Python skill for absolute beginners |
 
 ## Quick Start (New Machine)
 

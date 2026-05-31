@@ -1,0 +1,37 @@
+{
+    // ──────────────────────────────────────────
+    // STEP 4: REMOVE VISUAL CLUTTER
+    // ──────────────────────────────────────────
+    "editor.minimap.enabled": false,
+    "breadcrumbs.enabled": false,
+    "workbench.tree.indent": 16,
+
+    // ──────────────────────────────────────────
+    // STEP 5: QUALITY-OF-LIFE SETTINGS
+    // ──────────────────────────────────────────
+    "files.autoSave": "afterDelay",
+    "files.autoSaveDelay": 1000,
+    "editor.wordWrap": "on",
+    "editor.formatOnSave": true,
+    "editor.smoothScrolling": true,
+    "editor.renderWhitespace": "boundary",
+    "editor.cursorSmoothCaretAnimation": "on",
+
+    // ──────────────────────────────────────────
+    // STEP 6: PYTHON-SPECIFIC SETTINGS
+    // ──────────────────────────────────────────
+    "python.defaultInterpreterPath": "/home/datadragon/.local/share/mise/installs/python/3.12.13/bin/python",
+    "python.analysis.typeCheckingMode": "basic",
+    "python.analysis.autoImportCompletions": true,
+    "python.analysis.completeFunctionParens": true,
+    "python.terminal.activateEnvironment": false,
+
+    // ──────────────────────────────────────────
+    // EXISTING SETTINGS (preserved)
+    // ──────────────────────────────────────────
+    "update.mode": "none",
+    "workbench.secondarySideBar.defaultVisibility": "hidden",
+    "chat.disableAIFeatures": true,
+    "telemetry.feedback.enabled": false,
+    "editor.fontFamily": "JetBrains Mono"
+}

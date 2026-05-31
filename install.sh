@@ -45,6 +45,7 @@ link_file "$HOMEDIR/.config/starship.toml"    "$HOME/.config/starship.toml"
 link_file "$HOMEDIR/.config/ghostty/config"   "$HOME/.config/ghostty/config"
 link_file "$HOMEDIR/.config/tmux/tmux.conf"   "$HOME/.config/tmux/tmux.conf"
 link_file "$HOMEDIR/.config/lazygit/config.yml" "$HOME/.config/lazygit/config.yml"
+link_file "$HOMEDIR/.config/Code/User/settings.json" "$HOME/.config/Code/User/settings.json"
 
 # home/ top-level dotfiles
 link_file "$HOMEDIR/.gitconfig"               "$HOME/.gitconfig"

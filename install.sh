@@ -52,6 +52,9 @@ link_file "$HOMEDIR/.gitconfig"               "$HOME/.gitconfig"
 # AI agent skills
 link_file "$HOMEDIR/.agents/skills"           "$HOME/.agents/skills"
 
+# Pi extensions
+link_file "$HOMEDIR/.pi/agent/extensions/whimsical.ts" "$HOME/.pi/agent/extensions/whimsical.ts"
+
 echo ""
 echo "🎉 Done! Your dotfiles are symlinked."
 echo "   Edit any config in ~/ and the change is tracked in ~/dotfiles/home/"

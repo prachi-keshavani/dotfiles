@@ -40,6 +40,7 @@ link_file() {
 
 # home/.config/ files
 link_file "$HOMEDIR/.config/git/config"       "$HOME/.config/git/config"
+link_file "$HOMEDIR/.config/git/ignore"       "$HOME/.config/git/ignore"
 link_file "$HOMEDIR/.config/starship.toml"    "$HOME/.config/starship.toml"
 link_file "$HOMEDIR/.config/ghostty/config"   "$HOME/.config/ghostty/config"
 link_file "$HOMEDIR/.config/tmux/tmux.conf"   "$HOME/.config/tmux/tmux.conf"
@@ -47,6 +48,9 @@ link_file "$HOMEDIR/.config/lazygit/config.yml" "$HOME/.config/lazygit/config.ym
 
 # home/ top-level dotfiles
 link_file "$HOMEDIR/.gitconfig"               "$HOME/.gitconfig"
+
+# AI agent skills
+link_file "$HOMEDIR/.agents/skills"           "$HOME/.agents/skills"
 
 echo ""
 echo "🎉 Done! Your dotfiles are symlinked."

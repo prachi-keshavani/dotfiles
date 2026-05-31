@@ -7,8 +7,11 @@ My personal configuration files for Omarchy (Arch Linux + Hyprland).
 ```
 dotfiles/
 ├── home/                    ← Everything here mirrors ~/ on your machine
+│   ├── .agents/
+│   │   └── skills/          ← AI coding agent skills
 │   ├── .config/
 │   │   ├── git/config
+│   │   ├── git/ignore
 │   │   ├── ghostty/config
 │   │   ├── lazygit/config.yml
 │   │   ├── tmux/tmux.conf
@@ -38,11 +41,13 @@ Think of it as:
 | Config | Location | Description |
 |--------|----------|-------------|
 | `git` | `~/.config/git/config` | Git aliases, user info, delta pager |
+| `git/ignore` | `~/.config/git/ignore` | Global git ignore rules |
 | `.gitconfig` | `~/.gitconfig` | Git delta diff settings |
 | `starship` | `~/.config/starship.toml` | Terminal prompt theme |
 | `ghostty` | `~/.config/ghostty/config` | Terminal emulator settings |
 | `tmux` | `~/.config/tmux/tmux.conf` | Terminal multiplexer |
 | `lazygit` | `~/.config/lazygit/config.yml` | Git TUI (terminal UI) |
+| `agents/skills` | `~/.agents/skills` | AI coding agent skills |
 
 ## Quick Start (New Machine)
 

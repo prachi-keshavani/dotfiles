@@ -1,0 +1,20 @@
+# Lazygit config
+# See https://github.com/jesseduffield/lazygit/wiki/Config-Examples
+
+# Option 1: Set git to use diffnav as the diff tool globally
+# This makes `git difftool` use diffnav
+#
+# In your ~/.gitconfig (already configured), add:
+# [diff]
+#     tool = diffnav
+# [difftool "diffnav"]
+#     cmd = "diffnav \"$LOCAL\" \"$REMOTE\""
+
+# Option 2: In lazygit, press `D` (shift+d) on a file to open in external difftool
+# This uses git difftool, so it will use delta (which is already configured)
+
+# Option 3: Quick inline diff with diffnav using this command:
+# git diff | diffnav
+
+# The current lazygit setup already uses delta (via git config) for diffs
+# And diffnav is set as the pager for gh-dash PR diffs

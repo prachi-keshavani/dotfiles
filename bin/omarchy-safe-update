@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+# omarchy-safe-update — Standalone update orchestrator
+#
+# Flow: precheck report → interactive pi review → y/N gate → real update → verify.
+# Works from both terminal and waybar click paths (bash -c).
+#
+# Install:
+#   sudo ln -sf ~/.dotfiles/bin/omarchy-safe-update ~/.local/bin/
+#
+# Bypass:
+#   omarchy-safe-update --skip-precheck
+#
+# One-line .bashrc shadow:
+#   omarchy-update() { omarchy-safe-update "$@"; }
+
+set -euo pipefail
+
+# ---- paths ----
+OMARCHY_PATH="${OMARCHY_PATH:-$HOME/.local/share/omarchy}"
+XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
+
+# ---- helpers ----
+usage() {
+    cat >&2 <<'EOF'
+Usage: omarchy-safe-update [--skip-precheck]
+
+Orchestrates: precheck report → pi review → y/N gate → real omarchy-update → verify.
+
+Options:
+  --skip-precheck  Bypass the precheck and run omarchy-update directly
+EOF
+    exit 2
+}
+
+has_herdr() {
+    herdr workspace list &>/dev/null
+}
+
+main() {
+    if [[ "${1:-}" == "--help" ]]; then
+        usage
+    fi
+
+    if [[ "${1:-}" == "--skip-precheck" ]]; then
+        shift
+        command omarchy-update "$@"
+        return $?
+    fi
+
+    # ---- run precheck ----
+    local precheck_rc=0
+    local precheck_out
+    precheck_out=$(omarchy-precheck 2>&1) || precheck_rc=$?
+
+    echo "$precheck_out"
+
+    # ---- up to date ----
+    if [[ "$precheck_out" == *"up to date"* ]]; then
+        echo ""
+        echo "No new omarchy version. Proceeding with regular system update."
+        command omarchy-update "$@"
+        return $?
+    fi
+
+    # ---- precheck failure ----
+    if [[ "$precheck_rc" -ne 0 ]]; then
+        echo ""
+        echo "Warning: Precheck encountered an issue (offline or error)."
+        read -p "Proceed with update anyway? [y/N] " -r
+        if [[ "$REPLY" =~ ^[Yy]$ ]]; then
+            command omarchy-update "$@"
+            return $?
+        fi
+        echo "Update aborted."
+        return 1
+    fi
+
+    # ---- extract latest tag ----
+    local latest_tag
+    latest_tag=$(echo "$precheck_out" | grep -m1 -oP 'Omarchy Update Report: \S+ → \K\S+' || true)
+    if [[ -z "$latest_tag" ]]; then
+        # Try fallback: match "vX.Y.Z" near "→" from any line
+        latest_tag=$(echo "$precheck_out" | grep -oP '→ \Kv?[0-9]+\.[0-9]+\.[0-9]+[^ ]*' | head -1 || true)
+    fi
+    if [[ -z "$latest_tag" && "$precheck_rc" -eq 0 ]]; then
+        echo ""
+        echo "WARNING: Precheck reported a pending update but the tag could not be extracted from its output." >&2
+        echo "  The AI review will be skipped. Check the report at \$XDG_CACHE_HOME/omarchy-precheck/" >&2
+    fi
+
+    # ---- spawn AI review ----
+    if [[ -n "$latest_tag" ]]; then
+        local report_file="$XDG_CACHE_HOME/omarchy-precheck/$latest_tag.md"
+        if [[ -f "$report_file" ]]; then
+            local seed_prompt
+            seed_prompt='An Omarchy update is pending; the attached report shows exactly what changes. My configs are GNU Stow-managed from ~/.dotfiles and symlink integrity is my #1 concern. Investigate what could break on THIS system: read my real configs, inspect the pending migrations (especially any that touch stowed paths), check anything else relevant. Give a go/no-go assessment and a post-update checklist.
+
+IMPORTANT EVIDENCE RULES:
+1. The Migration Impact Analysis section in the report is GROUND TRUTH for file/link topology — do not re-derive it, interpret it against my real configs.
+2. Before claiming any command will break something, replicate the EXACT topology empirically: check whether the target path involves a file-level symlink or a directory-level symlink first, then test your claim on that topology.
+3. End every load-bearing claim with its evidence: the exact command you ran and its output.'
+
+            if has_herdr; then
+                echo ""
+                echo "→ Creating herdr workspace for review..."
+                local ws_json
+                ws_json=$(herdr workspace create --cwd ~ --label "omarchy-update $latest_tag" 2>/dev/null || true)
+                if [[ -n "$ws_json" ]]; then
+                    local ws_id pane_id
+                    ws_id=$(echo "$ws_json" | python3 -c 'import sys,json; print(json.load(sys.stdin)["result"]["workspace"]["workspace_id"])' 2>/dev/null || true)
+                    pane_id=$(echo "$ws_json" | python3 -c 'import sys,json; print(json.load(sys.stdin)["result"]["root_pane"]["pane_id"])' 2>/dev/null || true)
+                    if [[ -n "$ws_id" && -n "$pane_id" ]]; then
+                        herdr pane run "$pane_id" "pi @$report_file \"$seed_prompt\""
+                        echo "→ AI review ready in workspace 'omarchy-update $latest_tag'"
+                    else
+                        echo "Warning: Could not parse herdr response. Run pi manually:"
+                        echo "  pi @$report_file \"$seed_prompt\""
+                    fi
+                else
+                    echo "Warning: Could not create herdr workspace. Run pi manually:"
+                    echo "  pi @$report_file \"$seed_prompt\""
+                fi
+            else
+                echo ""
+                echo "→ Starting AI review... (exit pi when done)"
+                echo ""
+                pi @"$report_file" "$seed_prompt"
+            fi
+        fi
+    fi
+
+    # ---- y/N gate ----
+    echo ""
+    read -p "Proceed with update? [y/N] " -r
+    if [[ ! "$REPLY" =~ ^[Yy]$ ]]; then
+        echo "Update aborted. The report and pi session remain available."
+        return 1
+    fi
+
+    # ---- run the real update ----
+    command omarchy-update "$@"
+    local update_rc=$?
+
+    # ---- post-update symlink verification ----
+    if [[ -n "$latest_tag" ]]; then
+        local snapshot_file="$XDG_CACHE_HOME/omarchy-precheck/$latest_tag.symlinks"
+        if [[ -f "$snapshot_file" ]]; then
+            echo ""
+            echo "=== Post-Update Symlink Verification ==="
+            omarchy-precheck verify "$snapshot_file"
+            echo ""
+            echo "Review any issues above. If symlinks were severed, re-stow:"
+            echo "  cd ~/.dotfiles && stow --restow home"
+        fi
+    fi
+
+    return ${update_rc:-0}
+}
+
+main "$@"

@@ -1,0 +1,653 @@
+#!/usr/bin/env bash
+# omarchy-precheck — Pre-flight check for Omarchy updates
+# Reports what an update will change and opens an interactive AI review.
+set -euo pipefail
+
+# ---------- paths (env-overridable for testability) ----------
+OMARCHY_PATH="${OMARCHY_PATH:-$HOME/.local/share/omarchy}"
+XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
+DOTFILES_DIR="${DOTFILES_DIR:-$HOME/.dotfiles}"
+HOME_DIR="${HOME_DIR:-$HOME}"
+CACHE_DIR="$XDG_CACHE_HOME/omarchy-precheck"
+
+# ---------- tag detection (order: current → fetch → latest) ----------
+
+# Get the current (local) tag. Must be called BEFORE git fetch --tags
+# because after fetching, rev-list --tags would see the new remote tag
+# and report it as current, making every update look "up to date".
+get_current_tag() {
+    # Use HEAD, not the rev-list trick (which can return a tag ahead of HEAD
+    # when tags were fetched without merging, causing the checker to be blind).
+    local tag
+    tag=$(git -C "$OMARCHY_PATH" describe --tags HEAD 2>/dev/null) || {
+        echo "unknown"
+        return 1
+    }
+    echo "$tag"
+}
+
+# Fetch remote tags — safe, read-only on the working tree.
+fetch_tags() {
+    git -C "$OMARCHY_PATH" fetch --tags origin 2>&1
+}
+
+# Get the latest remote tag using ls-remote (no fetch needed).
+get_latest_tag() {
+    git -C "$OMARCHY_PATH" ls-remote --tags origin \
+        | grep -v "{}" \
+        | awk '{print $2}' \
+        | sed 's#refs/tags/##' \
+        | sort -V \
+        | tail -n 1
+}
+
+# ---------- helpers ----------
+usage() {
+    cat >&2 <<'EOF'
+Usage: omarchy-precheck [subcommand] [<snapshot-path>]
+
+Subcommands:
+  report          Generate and print the pre-update report (default)
+  verify          Compare symlinks against a pre-update snapshot
+
+Options:
+  --help          Show this help
+  --print-tags    Debug: print current and latest tag (used by tests)
+EOF
+    exit 2
+}
+
+# ---------- check subcommand (for waybar exec) ----------
+# Prints update info when pending (exit 0), nothing when up to date (exit 1).
+# Waybar hides the module when exec output is empty.
+check() {
+    local current_tag latest_tag
+
+    if ! current_tag=$(get_current_tag 2>&1); then
+        exit 1
+    fi
+
+    local fetch_out
+    if ! fetch_out=$(fetch_tags 2>&1); then
+        # Offline — silent exit 1, icon stays hidden
+        exit 1
+    fi
+
+    if ! latest_tag=$(get_latest_tag 2>&1); then
+        exit 1
+    fi
+
+    # If HEAD is between tags (e.g. v3.8.4-2-gabc), treat as update available
+    if ! echo "$current_tag" | grep -qP '^v?[0-9]+\.[0-9]+\.[0-9]+$'; then
+        echo "Omarchy update available ($current_tag → $latest_tag)"
+        exit 0
+    fi
+
+    if [[ "$current_tag" == "$latest_tag" ]]; then
+        # Up to date — silent exit 1, waybar hides icon
+        exit 1
+    fi
+
+    echo "Omarchy update available ($current_tag → $latest_tag)"
+    exit 0
+}
+
+# Scan symlinks in HOME_DIR (depth 1) and XDG_CONFIG_HOME (depth ≤2)
+# Outputs lines: rel_path<TAB>target<TAB>checksum (checksum empty for non-file targets)
+scan_symlinks() {
+    local scan_dirs=("$HOME_DIR" "$XDG_CONFIG_HOME")
+    local scan_depths=(1 3)
+    for idx in 0 1; do
+        local scan_dir="${scan_dirs[$idx]}"
+        local max_depth="${scan_depths[$idx]}"
+        [[ ! -d "$scan_dir" ]] && continue
+        while IFS= read -r -d '' link_path; do
+            local rel_path="${link_path#$scan_dir/}"
+            # Skip paths deeper than max_depth (counted in slashes from scan dir)
+            local depth
+            depth=$(echo "$rel_path" | tr -cd '/' | wc -c)
+            [[ "$depth" -gt "$max_depth" ]] && continue
+
+            local target
+            target=$(readlink "$link_path" 2>/dev/null || true)
+            [[ -z "$target" ]] && continue
+
+            # Compute checksum for file targets
+            local checksum=""
+            if [[ -f "$link_path" ]] || [[ -f "$(readlink -f "$link_path" 2>/dev/null)" ]]; then
+                local resolved
+                resolved=$(readlink -f "$link_path" 2>/dev/null || true)
+                if [[ -n "$resolved" && -f "$resolved" ]]; then
+                    checksum=$(sha256sum "$resolved" 2>/dev/null | awk '{print $1}' || true)
+                fi
+            fi
+
+            printf '%s\t%s\t%s\n' "$rel_path" "$target" "$checksum"
+        done < <(find "$scan_dir" -maxdepth "$max_depth" -type l -print0 2>/dev/null)
+    done
+}
+
+# ---------- subcommands ----------
+report() {
+    local current_tag latest_tag
+
+    # Order: current → fetch → latest (see get_current_tag docstring)
+    if ! current_tag=$(get_current_tag 2>&1); then
+        echo "Error: Could not determine current omarchy tag: $current_tag" >&2
+        exit 1
+    fi
+
+    local fetch_out
+    if ! fetch_out=$(fetch_tags 2>&1); then
+        echo "Warning: Could not fetch tags from remote — you appear to be offline." >&2
+        echo "  git output: $fetch_out" >&2
+        exit 1
+    fi
+
+    if ! latest_tag=$(get_latest_tag 2>&1); then
+        echo "Error: Could not determine latest omarchy tag: $latest_tag" >&2
+        exit 1
+    fi
+
+    if [[ "$current_tag" == "$latest_tag" ]]; then
+        echo "Omarchy is up to date ($current_tag)"
+        exit 0
+    fi
+
+    # Build the report
+    local report_file="$CACHE_DIR/$latest_tag.md"
+    mkdir -p "$CACHE_DIR"
+
+    {
+        echo "# Omarchy Update Report: $current_tag → $latest_tag"
+        echo ""
+
+        echo "## Changelog"
+        git -C "$OMARCHY_PATH" log --oneline "$current_tag..$latest_tag" 2>/dev/null
+        echo ""
+
+        echo "## Changed Files"
+        git -C "$OMARCHY_PATH" diff --stat "$current_tag..$latest_tag" 2>/dev/null
+        echo ""
+
+        # Config/defaults changes
+        local config_diff
+        config_diff=$(git -C "$OMARCHY_PATH" diff "$current_tag..$latest_tag" -- config/ default/ 2>/dev/null || true)
+        if [[ -n "$config_diff" ]]; then
+            echo "## Config Defaults Changed"
+            printf '```diff\n'
+            echo "$config_diff"
+            printf '```\n'
+            echo ""
+        fi
+
+        # Customizations at risk — user-modified files that upstream will change
+        local changed_configs
+        changed_configs=$(git -C "$OMARCHY_PATH" diff --name-only "$current_tag..$latest_tag" -- config/ 2>/dev/null || true)
+        local at_risk=()
+        if [[ -n "$changed_configs" ]]; then
+            while IFS= read -r cfg_file; do
+                [[ -z "$cfg_file" ]] && continue
+                # Strip 'config/' prefix to get the relative home path
+                local rel_path="${cfg_file#config/}"
+                local user_file="$XDG_CONFIG_HOME/$rel_path"
+                if [[ -f "$user_file" ]]; then
+                    if ! cmp -s <(git -C "$OMARCHY_PATH" show "$current_tag:$cfg_file" 2>/dev/null) "$user_file" 2>/dev/null; then
+                        at_risk+=("$rel_path")
+                    fi
+                fi
+            done <<< "$changed_configs"
+        fi
+        if [[ ${#at_risk[@]} -gt 0 ]]; then
+            echo "## Customizations At Risk"
+            echo "You have customized these config files that upstream is about to change:"
+            echo ""
+            for risk_file in "${at_risk[@]}"; do
+                echo "- \`$risk_file\` — your version differs from the upstream default"
+            done
+            echo ""
+        fi
+
+        # Divergence manifest — every tracked config file that differs from defaults
+        local diverged_files=()
+        local tracked_configs
+        tracked_configs=$(git -C "$OMARCHY_PATH" ls-tree -r "$current_tag" -- config/ 2>/dev/null | while IFS=$'\t' read -r mode_type_hash path; do
+            # path is like config/hypr/hyprland.conf
+            local rel="${path#config/}"
+            local user_file="$XDG_CONFIG_HOME/$rel"
+            if [[ -f "$user_file" ]]; then
+                if ! cmp -s <(git -C "$OMARCHY_PATH" show "$current_tag:$path" 2>/dev/null) "$user_file" 2>/dev/null; then
+                    echo "$rel"
+                fi
+            fi
+        done || true)
+        if [[ -n "$tracked_configs" ]]; then
+            while IFS= read -r div_file; do
+                [[ -z "$div_file" ]] && continue
+                diverged_files+=("$div_file")
+            done <<< "$tracked_configs"
+        fi
+        if [[ ${#diverged_files[@]} -gt 0 ]]; then
+            echo "## Divergence Manifest"
+            echo "These local configs differ from the current omarchy defaults (upstream tag $current_tag):"
+            echo ""
+            for div_file in "${diverged_files[@]}"; do
+                local user_file="$XDG_CONFIG_HOME/$div_file"
+                local line_count
+                line_count=$(wc -l < "$user_file" 2>/dev/null || echo 0)
+                echo "- \`$div_file\` — differs from default ($line_count lines)"
+            done
+            echo ""
+        fi
+
+        # Custom hooks — active (non-sample) hook scripts in the user's hooks dir
+        local hooks_dir="$XDG_CONFIG_HOME/omarchy/hooks"
+        if [[ -d "$hooks_dir" ]]; then
+            local active_hooks=()
+            while IFS= read -r hook_file; do
+                local basename
+                basename=$(basename "$hook_file")
+                # Exclude .sample files and non-regular files
+                [[ "$basename" == *.sample ]] && continue
+                active_hooks+=("$basename")
+            done < <(find "$hooks_dir" -maxdepth 1 -type f 2>/dev/null | sort)
+            if [[ ${#active_hooks[@]} -gt 0 ]]; then
+                echo "## Custom Hooks"
+                echo "Active hook scripts in \`$hooks_dir\`:"
+                echo ""
+                for hook in "${active_hooks[@]}"; do
+                    echo "- \`$hook\`"
+                done
+                echo ""
+            fi
+        fi
+
+        # AUR / foreign packages
+        echo "## AUR / Foreign Packages"
+        echo '```'
+        pacman -Qm 2>/dev/null || echo "(could not query AUR packages)"
+        printf '```\n\n'
+
+        # System basics
+        echo "## System Basics"
+        echo "- Kernel: $(uname -r)"
+        echo "- Current omarchy tag: \`$current_tag\`"
+        if command -v snapper &>/dev/null; then
+            echo "- Snapper: available"
+        else
+            echo "- Snapper: not available"
+        fi
+        echo ""
+
+        # Pending migrations — only show files added between the tags
+        local added_migrations
+        added_migrations=$(git -C "$OMARCHY_PATH" diff --name-only --diff-filter=A "$current_tag..$latest_tag" -- migrations/ 2>/dev/null || true)
+        if [[ -n "$added_migrations" ]]; then
+            echo "## Pending Migrations"
+            echo "These migration scripts will execute during the update:"
+            echo ""
+            while IFS= read -r mig_file; do
+                [[ -z "$mig_file" ]] && continue
+                echo "### $mig_file"
+                printf '```sh\n'
+                git -C "$OMARCHY_PATH" show "$latest_tag:$mig_file" 2>/dev/null || echo "(unable to read $mig_file)"
+                printf '```\n'
+                echo ""
+            done <<< "$added_migrations"
+        fi
+
+        # Migration Impact Analysis — static scan of write commands in pending migrations
+        if [[ -n "$added_migrations" ]]; then
+            local section_printed=false
+            while IFS= read -r mig_file; do
+                [[ -z "$mig_file" ]] && continue
+                local mig_content
+                mig_content=$(git -C "$OMARCHY_PATH" show "$latest_tag:$mig_file" 2>/dev/null || true)
+                [[ -z "$mig_content" ]] && continue
+                local has_findings=false
+                local mig_header_printed=false
+                local seen_lines=""
+
+                # First pass: collect variable assignments ($HOME paths)
+                local -A path_vars
+                while IFS= read -r line; do
+                    local stripped="$line"
+                    # Trim leading spaces
+                    while [[ "$stripped" == ' '* ]]; do stripped="${stripped# }"; done
+                    # Check line matches var=something
+                    local varname=""
+                    case "$stripped" in
+                        [a-zA-Z_]*=*)
+                            varname="${stripped%%=*}"
+                            local varval="${stripped#*=}"
+                            # Strip quotes
+                            varval="${varval#\"}"
+                            varval="${varval%\"}"
+                            case "$varval" in
+                                '$HOME/'*)
+                                    varval="${varval#'$HOME/'}"
+                                    path_vars["$varname"]="$HOME_DIR/$varval"
+                                    ;;
+                                '~/'*)
+                                    varval="${varval#'~/'}"
+                                    path_vars["$varname"]="$HOME_DIR/$varval"
+                                    ;;
+                            esac
+                            ;;
+                    esac
+                done <<< "$mig_content"
+
+                # Second pass: find write commands and classify targets
+                while IFS= read -r line; do
+                    local cmd="" target_raw=""
+                    # Use grep for pattern matching (pipefail-safe with || true)
+                    local match
+
+                    # sed -i
+                    match=$(echo "$line" | grep -oP '^\s*sed\s+-i' || true)
+                    if [[ -n "$match" ]]; then
+                        cmd="sed -i"
+                        target_raw=$(echo "$line" | grep -oP '\"[^\"]+\"$' || true)
+                        target_raw="${target_raw%\"}"
+                        target_raw="${target_raw#\"}"
+                    fi
+
+                    # rm
+                    if [[ -z "$cmd" ]]; then
+                        match=$(echo "$line" | grep -oP '^\s*rm\s+' || true)
+                        if [[ -n "$match" ]]; then
+                            cmd="rm"
+                            target_raw=$(echo "$line" | grep -oP '\"[^\"]+\"$' || true)
+                            if [[ -z "$target_raw" ]]; then
+                                target_raw=$(echo "$line" | grep -oP '\S+$' || true)
+                            fi
+                            target_raw="${target_raw%\"}"
+                            target_raw="${target_raw#\"}"
+                        fi
+                    fi
+
+                    # mv / cp / ln / tee
+                    if [[ -z "$cmd" ]]; then
+                        match=$(echo "$line" | grep -oP '^\s*(mv|cp|ln|tee)\s+' || true)
+                        if [[ -n "$match" ]]; then
+                            cmd=$(echo "$match" | grep -oP '[a-z]+' || true)
+                            target_raw=$(echo "$line" | grep -oP '\"[^\"]+\"$' || true)
+                            if [[ -z "$target_raw" ]]; then
+                                target_raw=$(echo "$line" | grep -oP '\S+$' || true)
+                            fi
+                            target_raw="${target_raw%\"}"
+                            target_raw="${target_raw#\"}"
+                        fi
+                    fi
+
+                    # echo with redirect
+                    if [[ -z "$cmd" ]]; then
+                        match=$(echo "$line" | grep -oP '^\s*echo\s+.*[>]+\s+' || true)
+                        if [[ -n "$match" ]]; then
+                            cmd="echo >"
+                            target_raw=$(echo "$line" | grep -oP '\S+$' || true)
+                            target_raw="${target_raw%\"}"
+                            target_raw="${target_raw#\"}"
+                        fi
+                    fi
+
+                    [[ -z "$cmd" || -z "$target_raw" ]] && continue
+
+                    # Resolve variable references
+                    local resolved="$target_raw"
+                    if [[ "$resolved" == \"* ]]; then
+                        resolved="${resolved#\"}"
+                        resolved="${resolved%\"}"
+                    fi
+                    for var_name in "${!path_vars[@]}"; do
+                        if [[ "$resolved" == *"\"\$"$var_name"\""* || "$resolved" == *"\$"$var_name""* ]]; then
+                            resolved="${resolved//\$\"$var_name\"/${path_vars[$var_name]}}"
+                            resolved="${resolved//\$$var_name/${path_vars[$var_name]}}"
+                        fi
+                    done
+                    # Resolve $HOME if still present
+                    resolved="${resolved/#\$HOME\//$HOME_DIR/}"
+
+                    # Classify topology
+                    local classification=""
+                    if [[ ! -e "$resolved" ]]; then
+                        classification="will create"
+                    elif [[ -L "$resolved" ]]; then
+                        # It's a symlink — check if file-level or dir-level
+                        local link_target
+                        link_target=$(readlink "$resolved" 2>/dev/null || true)
+                        if [[ -f "$resolved" ]]; then
+                            # FILE symlink (or symlink to a file)
+                            if [[ "$cmd" == "sed -i" || "$cmd" == "rm" ]]; then
+                                classification="SEVERS link (temp+rename for sed -i; removes link for rm)"
+                            else
+                                classification="writes through link to $link_target"
+                            fi
+                            if [[ "$link_target" == "$DOTFILES_DIR"* ]]; then
+                                classification+=" (stow-managed)"
+                            fi
+                        else
+                            # DIRECTORY symlink
+                            if [[ -d "$resolved" ]]; then
+                                local real_target
+                                real_target=$(readlink -f "$resolved" 2>/dev/null || true)
+                                classification="writes land in $real_target; link safe"
+                                if [[ "$real_target" == "$DOTFILES_DIR"* ]]; then
+                                    classification+=" (stow-managed)"
+                                fi
+                            else
+                                classification="broken symlink"
+                            fi
+                        fi
+                    elif [[ -f "$resolved" ]]; then
+                        classification="direct write (real file)"
+                        if [[ "$resolved" == "$HOME_DIR"* ]]; then
+                            # Check if any ancestor is a symlink (dir-level stow)
+                            local dir="$resolved"
+                            while [[ "$dir" != "$HOME_DIR" ]]; do
+                                dir=$(dirname "$dir")
+                                if [[ -L "$dir" ]]; then
+                                    local real_dir
+                                    real_dir=$(readlink -f "$dir" 2>/dev/null || true)
+                                    if [[ "$real_dir" == "$DOTFILES_DIR"* ]]; then
+                                        classification="writes land in $real_dir$(echo "$resolved" | sed "s|$dir||"); link safe (stow-managed)"
+                                    fi
+                                    break
+                                fi
+                            done
+                        fi
+                    elif [[ -d "$resolved" ]]; then
+                        classification="writes to directory"
+                    else
+                        classification="unknown target"
+                    fi
+
+                    if ! $section_printed; then
+                        echo ""
+                        echo "## Migration Impact Analysis"
+                        echo "Statically identified write commands in pending migrations:"
+                        echo ""
+                        section_printed=true
+                    fi
+
+                    local display_path="$resolved"
+                    # Shorten HOME_DIR for display
+                    display_path="${display_path/#$HOME_DIR/~}"
+                    local line_text="- \`$cmd\` on \`$display_path\` → $classification"
+                    # Dedup: skip if we've already emitted this exact line for this migration
+                    if ! echo "$seen_lines" | grep -F -q -x -- "$line_text"; then
+                        seen_lines="$seen_lines"$'\n'"$line_text"
+                        if ! $mig_header_printed; then
+                            echo "### $mig_file"
+                            mig_header_printed=true
+                        fi
+                        has_findings=true
+                        echo "$line_text"
+                    fi
+                done <<< "$mig_content"
+                if $has_findings; then
+                    echo ""
+                fi
+            done <<< "$added_migrations"
+        fi
+
+        # Symlink integrity map
+        local symlinks_file="$CACHE_DIR/$latest_tag.symlinks"
+        local snapshot_lines=()
+        local report_links=()
+
+        while IFS=$'\t' read -r rel_path target checksum; do
+            [[ -z "$rel_path" ]] && continue
+            snapshot_lines+=("$rel_path"$'\t'"$target"$'\t'"$checksum")
+            # Check if target is stow-managed
+            local stow_marked="no"
+            if [[ "$target" == "$DOTFILES_DIR"* ]]; then
+                stow_marked="yes"
+            fi
+            report_links+=("$rel_path"$'\t'"$target"$'\t'"$stow_marked")
+        done < <(scan_symlinks)
+
+        if [[ ${#report_links[@]} -gt 0 ]]; then
+            echo "## Symlink Integrity Map"
+            echo ""
+            for link_entry in "${report_links[@]}"; do
+                local link_name="${link_entry%%$'\t'*}"
+                local rest="${link_entry#*$'\t'}"
+                local link_target="${rest%%$'\t'*}"
+                local is_stow="${rest#*$'\t'}"
+                if [[ "$is_stow" == "yes" ]]; then
+                    echo "- \`$link_name\` → \`$link_target\` (stow-managed)"
+                else
+                    echo "- \`$link_name\` → \`$link_target\`"
+                fi
+            done
+            echo ""
+        fi
+
+        # Write the machine-readable symlink snapshot
+        if [[ ${#snapshot_lines[@]} -gt 0 ]]; then
+            printf '%s\n' "${snapshot_lines[@]}" > "$symlinks_file"
+        fi
+    } > "$report_file"
+
+    cat "$report_file"
+}
+
+verify() {
+    local snapshot_file="${1:-}"
+    if [[ -z "$snapshot_file" ]]; then
+        echo "Error: verify requires a snapshot file path" >&2
+        usage
+    fi
+    if [[ ! -f "$snapshot_file" ]]; then
+        echo "Error: snapshot file not found: $snapshot_file" >&2
+        exit 1
+    fi
+
+    # Load snapshot into an associative array: link_path -> target|checksum
+    # We build arrays for ordered iteration (bash 4.3+ required)
+    local -a snap_links=()
+    local -A link_target=()
+    local -A link_checksum=()
+
+    while IFS=$'\t' read -r link target checksum rest; do
+        [[ -z "$link" ]] && continue
+        snap_links+=("$link")
+        link_target["$link"]="$target"
+        link_checksum["$link"]="$checksum"
+    done < "$snapshot_file"
+
+    # Scan current symlinks into an associative array
+    local -A current_target=()
+    local -A current_checksum=()
+
+    while IFS=$'\t' read -r rel_path target checksum; do
+        [[ -z "$rel_path" ]] && continue
+        current_target["$rel_path"]="$target"
+        current_checksum["$rel_path"]="$checksum"
+    done < <(scan_symlinks)
+
+    local findings=0
+
+    for link in "${snap_links[@]}"; do
+        local old_target="${link_target[$link]}"
+        local old_checksum="${link_checksum[$link]}"
+        local new_target="${current_target[$link]:-}"
+        local new_checksum="${current_checksum[$link]:-}"
+
+        if [[ -z "$new_target" ]]; then
+            # Link no longer exists or is not a symlink anymore
+            echo "SEVERED: $link (was → $old_target)"
+            findings=$((findings + 1))
+        elif [[ "$new_target" != "$old_target" ]]; then
+            # Target changed — exclude omarchy theme retargets under omarchy/current/
+            if [[ "$link" != *"omarchy/current/"* ]]; then
+                echo "RETARGETED: $link (was → $old_target, now → $new_target)"
+                findings=$((findings + 1))
+            fi
+        elif [[ -n "$old_checksum" && "$new_checksum" != "$old_checksum" ]]; then
+            # Target file content changed
+            echo "TARGET-CHANGED: $link (content of $old_target changed)"
+            findings=$((findings + 1))
+        fi
+    done
+
+    if [[ "$findings" -eq 0 ]]; then
+        echo "Symlink integrity verified — no issues found."
+        exit 0
+    else
+        echo ""
+        echo "$findings symlink issue(s) found. Review before proceeding."
+        exit 1
+    fi
+}
+
+# Debug: print current and latest tags (used by tests)
+print_tags() {
+    local current_tag
+    if ! current_tag=$(get_current_tag 2>&1); then
+        echo "Error: $current_tag" >&2
+        exit 1
+    fi
+    echo "CURRENT=$current_tag"
+
+    local fetch_out
+    if ! fetch_out=$(fetch_tags 2>&1); then
+        echo "Warning: offline — latest tag may be stale" >&2
+        echo "LATEST=unknown"
+        exit 0
+    fi
+
+    local latest_tag
+    if ! latest_tag=$(get_latest_tag 2>&1); then
+        echo "Error: $latest_tag" >&2
+        exit 1
+    fi
+    echo "LATEST=$latest_tag"
+    exit 0
+}
+
+# ---------- main ----------
+[[ "${1:-}" == "--help" ]] && usage
+
+if [[ "${1:-}" == "--print-tags" ]]; then
+    print_tags
+fi
+
+case "${1:-}" in
+    ""|report)
+        shift 2>/dev/null || true
+        report "$@"
+        ;;
+    verify)
+        shift
+        verify "$@"
+        ;;
+    check)
+        check
+        ;;
+    *)
+        usage
+        ;;
+esac
